@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Central System Console</title>
+    <link rel="stylesheet" href="/static/style.css" />
+  </head>
+  <body>
+    <header class="hero">
+      <div class="hero__content">
+        <h1>Central System Console</h1>
+        <p>Monitor connected charge points and trigger OCPP 1.6 commands.</p>
+      </div>
+      <div class="hero__meta">
+        <div class="hero__signals">
+          <span id="summary" class="chip chip--muted">Loading…</span>
+          <span id="last-refresh" class="chip chip--ghost">Waiting for data</span>
+        </div>
+        <button id="refresh-button" class="button button--ghost" type="button">
+          Refresh
+        </button>
+      </div>
+    </header>
+
+    <main class="layout">
+      <section class="panel">
+        <div id="notifications" class="notifications" aria-live="polite"></div>
+        <div id="chargepoints" class="table-wrapper">
+          <div class="empty-state">
+            <strong>Loading charge points…</strong>
+            <span>Start the charge point simulator to see live data.</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="cards-grid">
+        <article class="card">
+          <header class="card__header">
+            <h2>Remote Start Transaction</h2>
+            <p>Authorize an EV driver and initiate a session remotely.</p>
+          </header>
+          <form id="remote-start-form" class="form" autocomplete="off">
+            <div class="form-grid">
+              <label class="field">
+                <span>Charge Point</span>
+                <select
+                  id="remote-start-cp"
+                  data-select="chargepoint"
+                  required
+                >
+                  <option value="">Loading…</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>Id Tag</span>
+                <input
+                  id="remote-start-idTag"
+                  type="text"
+                  maxlength="20"
+                  placeholder="e.g. RFID12345"
+                  required
+                />
+              </label>
+              <label class="field">
+                <span>Connector (optional)</span>
+                <input
+                  id="remote-start-connector"
+                  type="number"
+                  min="1"
+                  inputmode="numeric"
+                  placeholder="e.g. 1"
+                />
+              </label>
+            </div>
+            <button class="button" type="submit">Send Remote Start</button>
+          </form>
+        </article>
+
+        <article class="card">
+          <header class="card__header">
+            <h2>Remote Stop Transaction</h2>
+            <p>Stop an ongoing transaction if the driver requests assistance.</p>
+          </header>
+          <form id="remote-stop-form" class="form" autocomplete="off">
+            <div class="form-grid">
+              <label class="field">
+                <span>Active Transaction</span>
+                <select id="remote-stop-transaction">
+                  <option value="">No active transactions</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>Charge Point</span>
+                <select id="remote-stop-cp" data-select="chargepoint">
+                  <option value="">Loading…</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>Transaction Id</span>
+                <input
+                  id="remote-stop-id"
+                  type="number"
+                  min="1"
+                  inputmode="numeric"
+                  placeholder="Enter transaction id"
+                />
+              </label>
+            </div>
+            <button class="button" type="submit">Send Remote Stop</button>
+          </form>
+        </article>
+
+        <article class="card">
+          <header class="card__header">
+            <h2>Reset Charge Point</h2>
+            <p>Request a soft or hard reset of the charging station.</p>
+          </header>
+          <form id="reset-form" class="form" autocomplete="off">
+            <div class="form-grid">
+              <label class="field">
+                <span>Charge Point</span>
+                <select id="reset-cp" data-select="chargepoint">
+                  <option value="">Loading…</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>Reset Type</span>
+                <select id="reset-type">
+                  <option value="Soft">Soft reset</option>
+                  <option value="Hard">Hard reset</option>
+                </select>
+              </label>
+            </div>
+            <button class="button" type="submit">Send Reset</button>
+          </form>
+        </article>
+
+        <article class="card">
+          <header class="card__header">
+            <h2>Unlock Connector</h2>
+            <p>Force release of a connector that failed to unlock locally.</p>
+          </header>
+          <form id="unlock-form" class="form" autocomplete="off">
+            <div class="form-grid">
+              <label class="field">
+                <span>Charge Point</span>
+                <select id="unlock-cp" data-select="chargepoint">
+                  <option value="">Loading…</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>Connector Id</span>
+                <input
+                  id="unlock-connector"
+                  type="number"
+                  min="1"
+                  inputmode="numeric"
+                  placeholder="e.g. 1"
+                  required
+                />
+              </label>
+            </div>
+            <button class="button" type="submit">Unlock Connector</button>
+          </form>
+        </article>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <span>Demo UI powered by ocpp-go • Central System</span>
+    </footer>
+
+    <script type="module" src="/static/app.js"></script>
+  </body>
+</html>
