@@ -16,11 +16,12 @@ import (
 )
 
 const (
-	centralSystemPort   = 8887
-	centralSystemPath   = "/{ws}"
-	httpListenAddress   = ":8080"
-	ocppRequestTimeout  = 10 * time.Second
-	connectionEventName = "Central system"
+	centralSystemPort    = 8887
+	centralSystemPath    = "/{ws}"
+	httpListenAddress    = ":8080"
+	ocppRequestTimeout   = 10 * time.Second
+	connectionEventName  = "Central system"
+	maxMeterValueHistory = 10
 )
 
 // CSApp wires the OCPP central system and the HTTP frontend/API.
@@ -45,6 +46,7 @@ type chargePointState struct {
 	Connectors               map[int]*connectorState
 	ActiveTransactions       map[int]*transactionState
 	LastCompletedTransaction *finishedTransaction
+	MeterValues              map[int][]meterValueRecord
 }
 
 type connectorState struct {
@@ -65,6 +67,21 @@ type finishedTransaction struct {
 	IdTag       string
 	Reason      string
 	StoppedAt   time.Time
+}
+
+type meterValueRecord struct {
+	Timestamp time.Time
+	Samples   []sampledValueRecord
+}
+
+type sampledValueRecord struct {
+	Value     string
+	Unit      string
+	Measurand string
+	Phase     string
+	Context   string
+	Format    string
+	Location  string
 }
 
 // CentralSystemHandler implements OCPP 1.6 core message handlers.
@@ -413,7 +430,7 @@ func (h *CentralSystemHandler) OnDataTransfer(chargePointID string, request *cor
 // OnMeterValues handles MeterValues requests.
 func (h *CentralSystemHandler) OnMeterValues(chargePointID string, request *core.MeterValuesRequest) (*core.MeterValuesConfirmation, error) {
 	log.Printf("Received MeterValues from %s for connector %d (%d entries)", chargePointID, request.ConnectorId, len(request.MeterValue))
-	h.app.recordMeterValues(chargePointID, len(request.MeterValue))
+	h.app.recordMeterValues(chargePointID, request)
 	return core.NewMeterValuesConfirmation(), nil
 }
 
@@ -458,11 +475,45 @@ func (a *CSApp) recordHeartbeat(id string) {
 	state.LastHeartbeat = time.Now()
 }
 
-func (a *CSApp) recordMeterValues(id string, entries int) {
+func (a *CSApp) recordMeterValues(id string, req *core.MeterValuesRequest) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	state := a.ensureStateLocked(id)
-	state.LastMeterValues = time.Now()
+	entries := len(req.MeterValue)
+	if state.MeterValues == nil {
+		state.MeterValues = make(map[int][]meterValueRecord)
+	}
+	var latest time.Time
+	for _, meterValue := range req.MeterValue {
+		timestamp := time.Now()
+		if meterValue.Timestamp != nil && !meterValue.Timestamp.IsZero() {
+			timestamp = meterValue.Timestamp.Time
+		}
+		record := meterValueRecord{Timestamp: timestamp}
+		for _, sample := range meterValue.SampledValue {
+			record.Samples = append(record.Samples, sampledValueRecord{
+				Value:     sample.Value,
+				Unit:      string(sample.Unit),
+				Measurand: string(sample.Measurand),
+				Phase:     string(sample.Phase),
+				Context:   string(sample.Context),
+				Format:    string(sample.Format),
+				Location:  string(sample.Location),
+			})
+		}
+		values := append(state.MeterValues[req.ConnectorId], record)
+		if len(values) > maxMeterValueHistory {
+			values = values[len(values)-maxMeterValueHistory:]
+		}
+		state.MeterValues[req.ConnectorId] = values
+		if latest.IsZero() || timestamp.After(latest) {
+			latest = timestamp
+		}
+	}
+	if latest.IsZero() {
+		latest = time.Now()
+	}
+	state.LastMeterValues = latest
 	state.LastMeterValueEntries = entries
 }
 
@@ -533,6 +584,7 @@ func (a *CSApp) ensureStateLocked(id string) *chargePointState {
 			ID:                 id,
 			Connectors:         make(map[int]*connectorState),
 			ActiveTransactions: make(map[int]*transactionState),
+			MeterValues:        make(map[int][]meterValueRecord),
 		}
 		a.chargePoints[id] = state
 	}
@@ -541,6 +593,9 @@ func (a *CSApp) ensureStateLocked(id string) *chargePointState {
 	}
 	if state.ActiveTransactions == nil {
 		state.ActiveTransactions = make(map[int]*transactionState)
+	}
+	if state.MeterValues == nil {
+		state.MeterValues = make(map[int][]meterValueRecord)
 	}
 	return state
 }
@@ -571,20 +626,21 @@ func (a *CSApp) listChargePoints() []chargePointView {
 }
 
 type chargePointView struct {
-	ID                       string              `json:"id"`
-	Connected                bool                `json:"connected"`
-	Vendor                   string              `json:"vendor"`
-	Model                    string              `json:"model"`
-	FirmwareVersion          string              `json:"firmwareVersion,omitempty"`
-	LastBoot                 string              `json:"lastBoot"`
-	LastHeartbeat            string              `json:"lastHeartbeat"`
-	LastMeterValues          string              `json:"lastMeterValues"`
-	LastMeterValueEntries    int                 `json:"lastMeterValueEntries"`
-	LastConnectedAt          string              `json:"lastConnectedAt"`
-	LastDisconnectedAt       string              `json:"lastDisconnectedAt"`
-	Connectors               []connectorView     `json:"connectors"`
-	ActiveTransactions       []transactionView   `json:"activeTransactions"`
-	LastCompletedTransaction *transactionSummary `json:"lastCompletedTransaction,omitempty"`
+	ID                       string                    `json:"id"`
+	Connected                bool                      `json:"connected"`
+	Vendor                   string                    `json:"vendor"`
+	Model                    string                    `json:"model"`
+	FirmwareVersion          string                    `json:"firmwareVersion,omitempty"`
+	LastBoot                 string                    `json:"lastBoot"`
+	LastHeartbeat            string                    `json:"lastHeartbeat"`
+	LastMeterValues          string                    `json:"lastMeterValues"`
+	LastMeterValueEntries    int                       `json:"lastMeterValueEntries"`
+	LastConnectedAt          string                    `json:"lastConnectedAt"`
+	LastDisconnectedAt       string                    `json:"lastDisconnectedAt"`
+	Connectors               []connectorView           `json:"connectors"`
+	ActiveTransactions       []transactionView         `json:"activeTransactions"`
+	LastCompletedTransaction *transactionSummary       `json:"lastCompletedTransaction,omitempty"`
+	MeterValues              []meterValueConnectorView `json:"meterValues"`
 }
 
 type connectorView struct {
@@ -607,6 +663,26 @@ type transactionSummary struct {
 	IdTag         string `json:"idTag"`
 	Reason        string `json:"reason"`
 	StoppedAt     string `json:"stoppedAt"`
+}
+
+type meterValueConnectorView struct {
+	ConnectorID int                   `json:"connectorId"`
+	Entries     []meterValueEntryView `json:"entries"`
+}
+
+type meterValueEntryView struct {
+	Timestamp     string             `json:"timestamp"`
+	SampledValues []sampledValueView `json:"sampledValues"`
+}
+
+type sampledValueView struct {
+	Value     string `json:"value"`
+	Unit      string `json:"unit,omitempty"`
+	Measurand string `json:"measurand,omitempty"`
+	Phase     string `json:"phase,omitempty"`
+	Context   string `json:"context,omitempty"`
+	Format    string `json:"format,omitempty"`
+	Location  string `json:"location,omitempty"`
 }
 
 func (c *chargePointState) toView() chargePointView {
@@ -665,6 +741,38 @@ func (c *chargePointState) toView() chargePointView {
 			IdTag:         c.LastCompletedTransaction.IdTag,
 			Reason:        c.LastCompletedTransaction.Reason,
 			StoppedAt:     formatTime(c.LastCompletedTransaction.StoppedAt),
+		}
+	}
+
+	if len(c.MeterValues) > 0 {
+		connectorIDs := make([]int, 0, len(c.MeterValues))
+		for connectorID := range c.MeterValues {
+			connectorIDs = append(connectorIDs, connectorID)
+		}
+		sort.Ints(connectorIDs)
+		for _, connectorID := range connectorIDs {
+			records := c.MeterValues[connectorID]
+			if len(records) == 0 {
+				continue
+			}
+			history := meterValueConnectorView{ConnectorID: connectorID}
+			for idx := len(records) - 1; idx >= 0; idx-- {
+				record := records[idx]
+				entry := meterValueEntryView{Timestamp: formatTime(record.Timestamp)}
+				for _, sample := range record.Samples {
+					entry.SampledValues = append(entry.SampledValues, sampledValueView{
+						Value:     sample.Value,
+						Unit:      sample.Unit,
+						Measurand: sample.Measurand,
+						Phase:     sample.Phase,
+						Context:   sample.Context,
+						Format:    sample.Format,
+						Location:  sample.Location,
+					})
+				}
+				history.Entries = append(history.Entries, entry)
+			}
+			view.MeterValues = append(view.MeterValues, history)
 		}
 	}
 
