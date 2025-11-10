@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"io/fs"
 	"log"
 	"net/http"
@@ -56,9 +57,10 @@ type connectorState struct {
 }
 
 type transactionState struct {
-	ID        int
-	IdTag     string
-	StartedAt time.Time
+	ID         int
+	IdTag      string
+	StartedAt  time.Time
+	MeterStart int
 }
 
 type finishedTransaction struct {
@@ -67,6 +69,10 @@ type finishedTransaction struct {
 	IdTag       string
 	Reason      string
 	StoppedAt   time.Time
+	MeterStart  int
+	MeterStop   int
+	EnergyWh    int
+	EnergyKWh   float64
 }
 
 type meterValueRecord struct {
@@ -543,9 +549,10 @@ func (a *CSApp) recordStartTransaction(id string, req *core.StartTransactionRequ
 	}
 	transactionID := int(time.Now().Unix())
 	state.ActiveTransactions[req.ConnectorId] = &transactionState{
-		ID:        transactionID,
-		IdTag:     req.IdTag,
-		StartedAt: time.Now(),
+		ID:         transactionID,
+		IdTag:      req.IdTag,
+		StartedAt:  time.Now(),
+		MeterStart: req.MeterStart,
 	}
 	return transactionID
 }
@@ -555,10 +562,12 @@ func (a *CSApp) recordStopTransaction(id string, req *core.StopTransactionReques
 	defer a.mu.Unlock()
 	state := a.ensureStateLocked(id)
 	var connectorID int
+	var meterStart int
 	if state.ActiveTransactions != nil {
 		for cid, tx := range state.ActiveTransactions {
 			if tx.ID == req.TransactionId {
 				connectorID = cid
+				meterStart = tx.MeterStart
 				delete(state.ActiveTransactions, cid)
 				break
 			}
@@ -568,12 +577,25 @@ func (a *CSApp) recordStopTransaction(id string, req *core.StopTransactionReques
 	if req.Timestamp != nil && !req.Timestamp.IsZero() {
 		stoppedAt = req.Timestamp.Time
 	}
+	meterStop := req.MeterStop
+	if meterStop < 0 {
+		meterStop = 0
+	}
+	energyWh := 0
+	if meterStop >= meterStart && meterStop > 0 {
+		energyWh = meterStop - meterStart
+	}
+	energyKWh := float64(energyWh) / 1000
 	state.LastCompletedTransaction = &finishedTransaction{
 		ID:          req.TransactionId,
 		ConnectorID: connectorID,
 		IdTag:       req.IdTag,
 		Reason:      string(req.Reason),
 		StoppedAt:   stoppedAt,
+		MeterStart:  meterStart,
+		MeterStop:   meterStop,
+		EnergyWh:    energyWh,
+		EnergyKWh:   energyKWh,
 	}
 }
 
@@ -663,6 +685,10 @@ type transactionSummary struct {
 	IdTag         string `json:"idTag"`
 	Reason        string `json:"reason"`
 	StoppedAt     string `json:"stoppedAt"`
+	MeterStart    int    `json:"meterStart,omitempty"`
+	MeterStop     int    `json:"meterStop,omitempty"`
+	EnergyWh      int    `json:"energyWh,omitempty"`
+	EnergyKWh     string `json:"energyKWh,omitempty"`
 }
 
 type meterValueConnectorView struct {
@@ -741,6 +767,10 @@ func (c *chargePointState) toView() chargePointView {
 			IdTag:         c.LastCompletedTransaction.IdTag,
 			Reason:        c.LastCompletedTransaction.Reason,
 			StoppedAt:     formatTime(c.LastCompletedTransaction.StoppedAt),
+			MeterStart:    c.LastCompletedTransaction.MeterStart,
+			MeterStop:     c.LastCompletedTransaction.MeterStop,
+			EnergyWh:      c.LastCompletedTransaction.EnergyWh,
+			EnergyKWh:     formatEnergyKWh(c.LastCompletedTransaction.EnergyWh),
 		}
 	}
 
@@ -784,6 +814,16 @@ func formatTime(t time.Time) string {
 		return ""
 	}
 	return t.UTC().Format(time.RFC3339)
+}
+
+func formatEnergyKWh(wh int) string {
+	if wh <= 0 {
+		return ""
+	}
+	value := float64(wh) / 1000
+	formatted := fmt.Sprintf("%.3f", value)
+	formatted = strings.TrimRight(strings.TrimRight(formatted, "0"), ".")
+	return formatted
 }
 
 // --- Input payloads -------------------------------------------------------------------------

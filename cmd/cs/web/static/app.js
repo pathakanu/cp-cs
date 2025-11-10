@@ -137,6 +137,7 @@ function renderChargePoints(list) {
         <th>Connection</th>
         <th>Active Transactions</th>
         <th>Connectors</th>
+        <th>Meter Values</th>
         <th>Last Event</th>
       </tr>
     </thead>
@@ -226,6 +227,7 @@ function renderChargePointRow(cp) {
     : `<span class="empty">Waiting for status notifications</span>`;
 
   const lastEvent = renderLastEvent(cp);
+  const meterValuesHtml = renderMeterValues(cp);
 
   return `
     <tr data-connected="${cp.connected ? "true" : "false"}">
@@ -243,6 +245,7 @@ function renderChargePointRow(cp) {
       </td>
       <td>${activeHtml}</td>
       <td>${connectorsHtml}</td>
+      <td>${meterValuesHtml}</td>
       <td>${lastEvent}</td>
     </tr>
   `;
@@ -251,11 +254,13 @@ function renderChargePointRow(cp) {
 function renderLastEvent(cp) {
   if (cp.lastCompletedTransaction) {
     const tx = cp.lastCompletedTransaction;
+    const energySummary = formatTransactionEnergy(tx);
+    const energySegment = energySummary ? `${energySummary} · ` : "";
     return `
       <div class="status-line">
         <strong>Stopped transaction #${escapeHtml(tx.transactionId)}</strong>
         <span class="meta-line" title="${formatAbsolute(tx.stoppedAt)}">
-          Connector #${escapeHtml(tx.connectorId ?? "—")} · ${
+          Connector #${escapeHtml(tx.connectorId ?? "—")} · ${energySegment}${
             tx.reason ? escapeHtml(tx.reason) : "Reason unknown"
           } · ${formatRelative(tx.stoppedAt)}
         </span>
@@ -277,6 +282,112 @@ function renderLastEvent(cp) {
   }
 
   return `<span class="empty">No events yet</span>`;
+}
+
+function renderMeterValues(cp) {
+  const history = Array.isArray(cp.meterValues) ? cp.meterValues : [];
+  if (!history.length) {
+    return `<span class="empty">No meter readings yet</span>`;
+  }
+
+  const connectorsHtml = history
+    .map((connector) => {
+      const entries = Array.isArray(connector.entries)
+        ? connector.entries.slice(0, 5)
+        : [];
+      if (!entries.length) {
+        return `
+          <div class="meter-values__connector">
+            <div class="connector__label">Connector #${escapeHtml(connector.connectorId)}</div>
+            <span class="empty">No readings yet</span>
+          </div>
+        `;
+      }
+
+      const entriesHtml = entries
+        .map((entry) => {
+          const samples = Array.isArray(entry.sampledValues)
+            ? entry.sampledValues
+            : [];
+          const samplesHtml = samples.length
+            ? samples.map(renderSampledValue).join("")
+            : `<span class="empty">No sampled values</span>`;
+          return `
+            <div class="meter-values__entry">
+              <div class="meter-values__timestamp" title="${formatAbsolute(entry.timestamp)}">
+                Recorded ${formatRelative(entry.timestamp)}
+              </div>
+              ${samplesHtml}
+            </div>
+          `;
+        })
+        .join("");
+
+      return `
+        <div class="meter-values__connector">
+          <div class="connector__label">Connector #${escapeHtml(connector.connectorId)}</div>
+          ${entriesHtml}
+        </div>
+      `;
+    })
+    .join("");
+
+  return `<div class="meter-values">${connectorsHtml}</div>`;
+}
+
+function renderSampledValue(sample) {
+  if (!sample || sample.value === undefined || sample.value === null) {
+    return "";
+  }
+
+  const valueParts = [escapeHtml(sample.value)];
+  if (sample.unit) {
+    valueParts.push(escapeHtml(sample.unit));
+  }
+
+  const details = [];
+  if (sample.measurand) {
+    details.push(escapeHtml(sample.measurand));
+  }
+  if (sample.phase) {
+    details.push(`Phase ${escapeHtml(sample.phase)}`);
+  }
+  if (sample.location) {
+    details.push(escapeHtml(sample.location));
+  }
+  if (sample.context) {
+    details.push(escapeHtml(sample.context));
+  }
+  if (sample.format) {
+    details.push(escapeHtml(sample.format));
+  }
+
+  const detailsHtml = details.length
+    ? `<span class="meta-line">${details.join(" · ")}</span>`
+    : "";
+
+  return `
+    <div class="meter-values__sample">
+      <strong>${valueParts.join(" ")}</strong>
+      ${detailsHtml}
+    </div>
+  `;
+}
+
+function formatTransactionEnergy(tx) {
+  if (!tx) return "";
+
+  const kwh = typeof tx.energyKWh === "string" ? tx.energyKWh.trim() : tx.energyKWh;
+  if (kwh) {
+    return `${escapeHtml(kwh)} kWh delivered`;
+  }
+
+  const energyWh = Number.parseFloat(tx.energyWh);
+  if (Number.isFinite(energyWh) && energyWh > 0) {
+    return `${escapeHtml(energyWh)} Wh delivered`;
+  }
+
+  return "";
 }
 
 function updateChargePointSelects(chargePoints) {

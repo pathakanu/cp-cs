@@ -1,0 +1,7 @@
+version: "2"
+tunnels:
+  cs-ws:
+    proto: http
+    addr: 8887
+    schemes: [ws]
+    inspect: false
