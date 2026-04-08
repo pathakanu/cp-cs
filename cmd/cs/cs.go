@@ -14,6 +14,7 @@ import (
 	ocpp16 "github.com/lorenzodonini/ocpp-go/ocpp1.6"
 	"github.com/lorenzodonini/ocpp-go/ocpp1.6/core"
 	"github.com/lorenzodonini/ocpp-go/ocpp1.6/types"
+	"github.com/lorenzodonini/ocpp-go/ws"
 )
 
 const (
@@ -103,7 +104,12 @@ func main() {
 
 // NewCSApp creates a central system instance with state tracking.
 func NewCSApp() *CSApp {
-	cs := ocpp16.NewCentralSystem(nil, nil)
+	wsServer := ws.NewServer()
+	// Allow external charge points that set custom Origin headers to pass the websocket upgrade.
+	wsServer.SetCheckOriginHandler(func(r *http.Request) bool {
+		return true
+	})
+	cs := ocpp16.NewCentralSystem(nil, wsServer)
 	app := &CSApp{
 		central:      cs,
 		chargePoints: make(map[string]*chargePointState),

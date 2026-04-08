@@ -3,5 +3,8 @@ tunnels:
   cs-ws:
     proto: http
     addr: 8887
-    schemes: [ws]
     inspect: false
+  cs-ui:
+    proto: http
+    addr: 8080
+  
