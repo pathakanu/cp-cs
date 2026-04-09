@@ -418,7 +418,7 @@ func (h *CentralSystemHandler) OnBootNotification(chargePointID string, request 
 	h.app.recordBootNotification(chargePointID, request)
 	return core.NewBootNotificationConfirmation(
 		types.NewDateTime(time.Now()),
-		300, core.RegistrationStatusAccepted), nil
+		10, core.RegistrationStatusAccepted), nil
 }
 
 // OnAuthorize handles the Authorize request.
