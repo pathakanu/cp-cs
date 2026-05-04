@@ -84,7 +84,7 @@ func main() {
 	handler := NewChargePointHandler(cp)
 	cp.SetCoreHandler(handler)
 
-	if err := cp.Start("ws://161.118.190.45:8887"); err != nil {
+	if err := cp.Start("ws://localhost:8887"); err != nil {
 		log.Fatalf("failed to connect to CS: %v", err)
 	}
 	log.Println("Connected to central system")

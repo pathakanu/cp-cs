@@ -7,10 +7,14 @@ const state = {
 
 const elements = {
   chargepoints: document.getElementById("chargepoints"),
-  notifications: document.getElementById("notifications"),
+  sessionsList: document.getElementById("sessions-list"),
   summary: document.getElementById("summary"),
   lastRefresh: document.getElementById("last-refresh"),
   refreshButton: document.getElementById("refresh-button"),
+  statTotal: document.getElementById("stat-total"),
+  statOnline: document.getElementById("stat-online"),
+  statSessions: document.getElementById("stat-sessions"),
+  statEnergy: document.getElementById("stat-energy"),
   remoteStartForm: document.getElementById("remote-start-form"),
   remoteStartCP: document.getElementById("remote-start-cp"),
   remoteStartIdTag: document.getElementById("remote-start-idTag"),
@@ -37,10 +41,7 @@ function init() {
   elements.refreshButton.addEventListener("click", () => refreshData(true));
   elements.remoteStartForm.addEventListener("submit", handleRemoteStart);
   elements.remoteStopForm.addEventListener("submit", handleRemoteStop);
-  elements.remoteStopTransaction.addEventListener(
-    "change",
-    handleTransactionSelect,
-  );
+  elements.remoteStopTransaction.addEventListener("change", handleTransactionSelect);
   elements.resetForm.addEventListener("submit", handleReset);
   elements.unlockForm.addEventListener("submit", handleUnlock);
 
@@ -79,17 +80,19 @@ async function refreshData(manual = false) {
     state.chargePoints = Array.isArray(data) ? data : [];
     state.lastRefresh = Date.now();
 
-    renderChargePoints(state.chargePoints);
+    renderCPCards(state.chargePoints);
+    renderSessionsList(state.chargePoints);
+    renderStats(state.chargePoints);
     updateChargePointSelects(state.chargePoints);
     updateTransactionOptions(state.chargePoints);
     updateSummary(state.chargePoints);
     updateLastRefresh();
 
     if (manual) {
-      displayMessage("success", "Charge point list refreshed.");
+      displayMessage("success", "Data refreshed successfully.");
     }
   } catch (error) {
-    displayMessage("error", `Failed to load charge points: ${error.message}`);
+    displayMessage("error", `Failed to load data: ${error.message}`);
   } finally {
     isRefreshing = false;
     setButtonLoading(elements.refreshButton, false);
@@ -104,291 +107,377 @@ async function fetchChargePoints() {
     let message = response.statusText;
     try {
       const payload = await response.json();
-      if (payload && payload.error) {
-        message = payload.error;
-      }
-    } catch (_) {
-      // ignore
-    }
+      if (payload && payload.error) message = payload.error;
+    } catch (_) {}
     throw new Error(message || "Unexpected server response");
   }
   return response.json();
 }
 
-function renderChargePoints(list) {
-  const container = elements.chargepoints;
-  container.innerHTML = "";
+// ===== RENDER: Stats bar =====
 
+function renderStats(chargePoints) {
+  const total = chargePoints.length;
+  const online = chargePoints.filter((cp) => cp.connected).length;
+  const activeSessions = chargePoints.reduce(
+    (acc, cp) => acc + (Array.isArray(cp.activeTransactions) ? cp.activeTransactions.length : 0),
+    0,
+  );
+
+  // Latest completed transaction energy across all CPs
+  let latestEnergyKWh = 0;
+  let latestStoppedAt = null;
+  chargePoints.forEach((cp) => {
+    if (cp.lastCompletedTransaction) {
+      const tx = cp.lastCompletedTransaction;
+      const t = tx.stoppedAt ? new Date(tx.stoppedAt).getTime() : 0;
+      if (!latestStoppedAt || t > latestStoppedAt) {
+        latestStoppedAt = t;
+        const kwh = tx.energyKWh ? parseFloat(tx.energyKWh) : (tx.energyWh > 0 ? tx.energyWh / 1000 : 0);
+        latestEnergyKWh = kwh;
+      }
+    }
+  });
+
+  setStatValue(elements.statTotal, total > 0 ? String(total) : "0");
+  setStatValue(elements.statOnline, online > 0 ? String(online) : "0");
+  setStatValue(elements.statSessions, activeSessions > 0 ? String(activeSessions) : "0");
+  setStatValue(
+    elements.statEnergy,
+    latestEnergyKWh > 0 ? `${latestEnergyKWh.toFixed(2)} kWh` : "—",
+  );
+}
+
+function setStatValue(el, text) {
+  if (!el) return;
+  const val = el.querySelector(".stat-box__value");
+  if (val) val.textContent = text;
+}
+
+// ===== RENDER: CP Cards =====
+
+function renderCPCards(list) {
+  const container = elements.chargepoints;
   if (!list.length) {
     container.innerHTML = `
       <div class="empty-state">
-        <strong>No charge points yet.</strong>
+        <div class="empty-state__icon">🔌</div>
+        <strong>No charge points connected</strong>
         <span>Start the simulator in <code>cmd/cp</code> to connect a charger.</span>
       </div>
     `;
     return;
   }
-
-  const table = document.createElement("table");
-  table.innerHTML = `
-    <thead>
-      <tr>
-        <th>Charge Point</th>
-        <th>Connection</th>
-        <th>Active Transactions</th>
-        <th>Connectors</th>
-        <th>Meter Values</th>
-        <th>Last Event</th>
-      </tr>
-    </thead>
-    <tbody></tbody>
-  `;
-
-  const tbody = table.querySelector("tbody");
-  tbody.innerHTML = list
-    .map((cp) => renderChargePointRow(cp))
-    .join("");
-
-  container.appendChild(table);
+  container.innerHTML = list.map((cp) => renderCPCard(cp)).join("");
 }
 
-function renderChargePointRow(cp) {
-  const connectedClass = cp.connected
-    ? "status-pill status-pill--ok"
-    : "status-pill status-pill--error";
-  const connectionStatus = cp.connected ? "Connected" : "Disconnected";
+function renderCPCard(cp) {
+  const isOnline = cp.connected;
+  const cardClass = isOnline ? "cp-card cp-card--online" : "cp-card";
 
-  const heartbeat = formatRelative(cp.lastHeartbeat);
-  const heartbeatLine = cp.lastHeartbeat
-    ? `<span class="meta-line" title="${formatAbsolute(cp.lastHeartbeat)}">Heartbeat <strong>${heartbeat}</strong></span>`
-    : `<span class="meta-line empty">No heartbeat yet</span>`;
+  const statusHtml = isOnline
+    ? `<div class="status-pill status-pill--online">● Online</div>`
+    : `<div class="status-pill status-pill--offline">○ Offline</div>`;
 
-  const bootLine = cp.lastBoot
-    ? `<span class="meta-line" title="${formatAbsolute(cp.lastBoot)}">Boot acknowledged ${formatRelative(cp.lastBoot)}</span>`
-    : `<span class="meta-line empty">No boot notification</span>`;
+  const hb = getHeartbeatStatus(cp.lastHeartbeat, isOnline);
+  const heartbeatHtml = `
+    <div class="heartbeat-wrap">
+      <div class="heartbeat-dot heartbeat-dot--${escapeHtml(hb.dotClass)}" title="${escapeHtml(hb.title)}"></div>
+      <span class="heartbeat-label">${hb.label}</span>
+    </div>
+  `;
 
-  const meterLine =
-    cp.lastMeterValues && cp.lastMeterValueEntries
-      ? `<span class="meta-line" title="${formatAbsolute(cp.lastMeterValues)}">Meter values (${cp.lastMeterValueEntries}) ${formatRelative(cp.lastMeterValues)}</span>`
-      : "";
-
-  const hardwareInfo = [
-    [cp.vendor, cp.model].filter(Boolean).join(" • ") || "—",
-    cp.firmwareVersion ? `FW ${escapeHtml(cp.firmwareVersion)}` : "",
-  ]
-    .filter(Boolean)
-    .join(" · ");
-
-  const activeTransactions = Array.isArray(cp.activeTransactions)
-    ? cp.activeTransactions
-    : [];
-  const activeHtml = activeTransactions.length
-    ? `<ul class="list--stack">${activeTransactions
-        .map(
-          (tx) => `
-            <li>
-              <strong>Tx ${escapeHtml(tx.transactionId)}</strong>
-              ${tx.idTag ? `· ${escapeHtml(tx.idTag)}` : ""}
-              <span class="meta-line" title="${formatAbsolute(tx.startedAt)}">
-                Connector #${escapeHtml(tx.connectorId ?? "—")} • Started ${formatRelative(tx.startedAt)}
-              </span>
-            </li>
-          `,
-        )
-        .join("")}</ul>`
-    : `<span class="empty">None</span>`;
+  const hw = [cp.vendor, cp.model].filter(Boolean).join(" / ") || "—";
+  const fw = cp.firmwareVersion ? `FW ${escapeHtml(cp.firmwareVersion)}` : "—";
+  const bootAgo = cp.lastBoot ? formatRelative(cp.lastBoot) : "—";
+  const connStatus = isOnline ? "Connected" : "Last Seen";
+  const connTime = isOnline
+    ? (cp.lastConnectedAt ? formatRelative(cp.lastConnectedAt) : "—")
+    : (cp.lastDisconnectedAt ? formatRelative(cp.lastDisconnectedAt) : "—");
+  const meterInfo = cp.lastMeterValues
+    ? `${cp.lastMeterValueEntries} entries · ${formatRelative(cp.lastMeterValues)}`
+    : "—";
 
   const connectors = Array.isArray(cp.connectors) ? cp.connectors : [];
-  const connectorsHtml = connectors.length
-    ? `<div class="connector-list">${connectors
-        .map((connector) => {
-          const status = connector.status || "Unknown";
-          const tagClass = `tag ${classifyConnectorStatus(status)}`;
-          const errorBadge =
-            connector.error &&
-            connector.error !== "NoError" &&
-            connector.error !== "NoError".toLowerCase()
-              ? `<span class="badge badge--error">${escapeHtml(connector.error)}</span>`
-              : "";
-          return `
-            <div class="connector">
-              <div class="connector__label">
-                <span>#${escapeHtml(connector.connectorId)}</span>
-                <span class="${tagClass}">${escapeHtml(status)}</span>
-                ${errorBadge}
-              </div>
-              <div class="connector__meta" title="${formatAbsolute(connector.updatedAt)}">
-                Updated ${formatRelative(connector.updatedAt)}
-              </div>
-            </div>
-          `;
-        })
-        .join("")}</div>`
-    : `<span class="empty">Waiting for status notifications</span>`;
+  const connectorsSection = connectors.length
+    ? `<div>
+        <div class="cp-section-label">Connectors</div>
+        <div class="connectors-row">${connectors.map((c) => renderConnectorPill(c)).join("")}</div>
+       </div>`
+    : "";
 
-  const lastEvent = renderLastEvent(cp);
-  const meterValuesHtml = renderMeterValues(cp);
+  const activeTxs = Array.isArray(cp.activeTransactions) ? cp.activeTransactions : [];
+  const activeTxSection = activeTxs.length
+    ? `<div>
+        <div class="cp-section-label">Active Sessions</div>
+        <div class="active-sessions">${activeTxs.map((tx) => renderActiveTxItem(tx)).join("")}</div>
+       </div>`
+    : "";
 
-  return `
-    <tr data-connected="${cp.connected ? "true" : "false"}">
-      <td>
-        <div class="cp-id">${escapeHtml(cp.id)}</div>
-        <div class="cp-meta">${escapeHtml(hardwareInfo)}</div>
-      </td>
-      <td>
-        <div class="status-line">
-          <span class="${connectedClass}">${connectionStatus}</span>
-          ${heartbeatLine}
-          ${bootLine}
-          ${meterLine}
-        </div>
-      </td>
-      <td>${activeHtml}</td>
-      <td>${connectorsHtml}</td>
-      <td>${meterValuesHtml}</td>
-      <td>${lastEvent}</td>
-    </tr>
-  `;
-}
-
-function renderLastEvent(cp) {
-  if (cp.lastCompletedTransaction) {
-    const tx = cp.lastCompletedTransaction;
-    const energySummary = formatTransactionEnergy(tx);
-    const energySegment = energySummary ? `${energySummary} · ` : "";
-    return `
-      <div class="status-line">
-        <strong>Stopped transaction #${escapeHtml(tx.transactionId)}</strong>
-        <span class="meta-line" title="${formatAbsolute(tx.stoppedAt)}">
-          Connector #${escapeHtml(tx.connectorId ?? "—")} · ${energySegment}${
-            tx.reason ? escapeHtml(tx.reason) : "Reason unknown"
-          } · ${formatRelative(tx.stoppedAt)}
-        </span>
-      </div>
-    `;
-  }
-
-  if (cp.lastMeterValues) {
-    return `
-      <div class="status-line">
-        <strong>Meter values received</strong>
-        <span class="meta-line" title="${formatAbsolute(cp.lastMeterValues)}">
-          ${cp.lastMeterValueEntries || 0} entries · ${formatRelative(
-            cp.lastMeterValues,
-          )}
-        </span>
-      </div>
-    `;
-  }
-
-  return `<span class="empty">No events yet</span>`;
-}
-
-function renderMeterValues(cp) {
-  const history = Array.isArray(cp.meterValues) ? cp.meterValues : [];
-  if (!history.length) {
-    return `<span class="empty">No meter readings yet</span>`;
-  }
-
-  const connectorsHtml = history
-    .map((connector) => {
-      const entries = Array.isArray(connector.entries)
-        ? connector.entries.slice(0, 5)
-        : [];
-      if (!entries.length) {
-        return `
-          <div class="meter-values__connector">
-            <div class="connector__label">Connector #${escapeHtml(connector.connectorId)}</div>
-            <span class="empty">No readings yet</span>
-          </div>
-        `;
-      }
-
-      const entriesHtml = entries
-        .map((entry) => {
-          const samples = Array.isArray(entry.sampledValues)
-            ? entry.sampledValues
-            : [];
-          const samplesHtml = samples.length
-            ? samples.map(renderSampledValue).join("")
-            : `<span class="empty">No sampled values</span>`;
-          return `
-            <div class="meter-values__entry">
-              <div class="meter-values__timestamp" title="${formatAbsolute(entry.timestamp)}">
-                Recorded ${formatRelative(entry.timestamp)}
-              </div>
-              ${samplesHtml}
-            </div>
-          `;
-        })
-        .join("");
-
-      return `
-        <div class="meter-values__connector">
-          <div class="connector__label">Connector #${escapeHtml(connector.connectorId)}</div>
-          ${entriesHtml}
-        </div>
-      `;
-    })
-    .join("");
-
-  return `<div class="meter-values">${connectorsHtml}</div>`;
-}
-
-function renderSampledValue(sample) {
-  if (!sample || sample.value === undefined || sample.value === null) {
-    return "";
-  }
-
-  const valueParts = [escapeHtml(sample.value)];
-  if (sample.unit) {
-    valueParts.push(escapeHtml(sample.unit));
-  }
-
-  const details = [];
-  if (sample.measurand) {
-    details.push(escapeHtml(sample.measurand));
-  }
-  if (sample.phase) {
-    details.push(`Phase ${escapeHtml(sample.phase)}`);
-  }
-  if (sample.location) {
-    details.push(escapeHtml(sample.location));
-  }
-  if (sample.context) {
-    details.push(escapeHtml(sample.context));
-  }
-  if (sample.format) {
-    details.push(escapeHtml(sample.format));
-  }
-
-  const detailsHtml = details.length
-    ? `<span class="meta-line">${details.join(" · ")}</span>`
+  const lastTxSection = cp.lastCompletedTransaction
+    ? renderLastSessionInCard(cp.lastCompletedTransaction)
     : "";
 
   return `
-    <div class="meter-values__sample">
-      <strong>${valueParts.join(" ")}</strong>
-      ${detailsHtml}
+    <div class="${cardClass}">
+      <div class="cp-card__header">
+        <div>
+          <div class="cp-card__id">${escapeHtml(cp.id)}</div>
+          <div class="cp-card__hw">${escapeHtml(hw)} · ${escapeHtml(fw)}</div>
+        </div>
+        <div class="cp-card__status">${statusHtml}</div>
+      </div>
+
+      <div class="cp-card__meta">
+        <div class="meta-item">
+          <div class="meta-item__key">Heartbeat</div>
+          <div class="meta-item__val">${heartbeatHtml}</div>
+        </div>
+        <div class="meta-item">
+          <div class="meta-item__key">Last Boot</div>
+          <div class="meta-item__val" title="${formatAbsolute(cp.lastBoot)}">${escapeHtml(bootAgo)}</div>
+        </div>
+        <div class="meta-item">
+          <div class="meta-item__key">${escapeHtml(connStatus)}</div>
+          <div class="meta-item__val">${escapeHtml(connTime)}</div>
+        </div>
+        <div class="meta-item">
+          <div class="meta-item__key">Meter Values</div>
+          <div class="meta-item__val">${escapeHtml(meterInfo)}</div>
+        </div>
+      </div>
+
+      ${connectorsSection}
+      ${activeTxSection}
+      ${lastTxSection}
     </div>
   `;
 }
 
-function formatTransactionEnergy(tx) {
-  if (!tx) return "";
-
-  const kwh = typeof tx.energyKWh === "string" ? tx.energyKWh.trim() : tx.energyKWh;
-  if (kwh) {
-    return `${escapeHtml(kwh)} kWh delivered`;
-  }
-
-  const energyWh = Number.parseFloat(tx.energyWh);
-  if (Number.isFinite(energyWh) && energyWh > 0) {
-    return `${escapeHtml(energyWh)} Wh delivered`;
-  }
-
-  return "";
+function renderConnectorPill(connector) {
+  const status = connector.status || "Unknown";
+  const cls = classifyConnectorPillStatus(status);
+  const errorPart =
+    connector.error && connector.error !== "NoError" && connector.error !== "NoError".toLowerCase()
+      ? ` <span class="connector-error">${escapeHtml(connector.error)}</span>`
+      : "";
+  return `
+    <div class="connector-pill connector-pill--${cls}" title="Updated ${formatRelative(connector.updatedAt)}">
+      <span class="connector-pill__num">#${escapeHtml(connector.connectorId)}</span>
+      <span class="connector-dot"></span>
+      ${escapeHtml(status)}${errorPart}
+    </div>
+  `;
 }
+
+function renderActiveTxItem(tx) {
+  return `
+    <div class="active-session-item">
+      <span class="active-session-item__badge">
+        <span class="live-dot"></span>LIVE
+      </span>
+      <div class="active-session-item__info">
+        Tx <strong>${escapeHtml(tx.transactionId)}</strong>
+        ${tx.idTag ? ` · ${escapeHtml(tx.idTag)}` : ""}
+        · Connector #${escapeHtml(tx.connectorId ?? "?")}
+      </div>
+      <div class="active-session-item__meta" title="${formatAbsolute(tx.startedAt)}">
+        ${formatRelative(tx.startedAt)}
+      </div>
+    </div>
+  `;
+}
+
+function renderLastSessionInCard(tx) {
+  const energyKWh = tx.energyKWh
+    ? parseFloat(tx.energyKWh)
+    : tx.energyWh > 0
+    ? tx.energyWh / 1000
+    : 0;
+
+  return `
+    <div>
+      <div class="cp-section-label">Last Session</div>
+      <div class="last-session">
+        <div class="last-session__icon">✓</div>
+        <div class="last-session__content">
+          <div class="last-session__title">
+            Tx #${escapeHtml(tx.transactionId)}${tx.idTag ? ` · ${escapeHtml(tx.idTag)}` : ""}
+          </div>
+          <div class="last-session__meta">
+            ${energyKWh > 0 ? `<span class="last-session__energy">⚡ ${energyKWh.toFixed(3)} kWh</span>` : ""}
+            ${tx.reason ? `<span>${escapeHtml(tx.reason)}</span>` : ""}
+            <span title="${formatAbsolute(tx.stoppedAt)}">${formatRelative(tx.stoppedAt)}</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+// ===== RENDER: Sessions Table =====
+
+function renderSessionsList(chargePoints) {
+  const container = elements.sessionsList;
+  if (!container) return;
+
+  const sessions = [];
+
+  chargePoints.forEach((cp) => {
+    (cp.activeTransactions || []).forEach((tx) => {
+      sessions.push({
+        type: "active",
+        cpId: cp.id,
+        transactionId: tx.transactionId,
+        idTag: tx.idTag,
+        connectorId: tx.connectorId,
+        startedAt: tx.startedAt,
+        stoppedAt: null,
+        energyKWh: null,
+        reason: null,
+      });
+    });
+
+    if (cp.lastCompletedTransaction) {
+      const tx = cp.lastCompletedTransaction;
+      const kwh = tx.energyKWh
+        ? parseFloat(tx.energyKWh)
+        : tx.energyWh > 0
+        ? tx.energyWh / 1000
+        : 0;
+      sessions.push({
+        type: "completed",
+        cpId: cp.id,
+        transactionId: tx.transactionId,
+        idTag: tx.idTag,
+        connectorId: tx.connectorId,
+        startedAt: null,
+        stoppedAt: tx.stoppedAt,
+        energyKWh: kwh > 0 ? kwh : null,
+        reason: tx.reason,
+        meterStart: tx.meterStart,
+        meterStop: tx.meterStop,
+        energyWh: tx.energyWh,
+      });
+    }
+  });
+
+  if (!sessions.length) {
+    container.innerHTML = `
+      <div class="empty-state">
+        <div class="empty-state__icon">📋</div>
+        <span>No sessions recorded yet. Start a transaction to see it here.</span>
+      </div>
+    `;
+    return;
+  }
+
+  sessions.sort((a, b) => {
+    if (a.type === "active" && b.type !== "active") return -1;
+    if (b.type === "active" && a.type !== "active") return 1;
+    const tA = new Date(a.stoppedAt || a.startedAt || 0).getTime();
+    const tB = new Date(b.stoppedAt || b.startedAt || 0).getTime();
+    return tB - tA;
+  });
+
+  const rows = sessions.map((s) => renderSessionRow(s)).join("");
+
+  container.innerHTML = `
+    <table class="sessions-table">
+      <thead>
+        <tr>
+          <th>Status</th>
+          <th>Charge Point</th>
+          <th>Driver</th>
+          <th>Connector</th>
+          <th>Transaction</th>
+          <th>Time</th>
+          <th>Energy</th>
+        </tr>
+      </thead>
+      <tbody>${rows}</tbody>
+    </table>
+  `;
+}
+
+function renderSessionRow(session) {
+  const isActive = session.type === "active";
+  const rowClass = isActive ? "session-row--active" : "";
+
+  const statusBadge = isActive
+    ? `<span class="session-badge session-badge--active"><span class="live-dot"></span>Active</span>`
+    : `<span class="session-badge session-badge--done">Completed</span>`;
+
+  const timeCell = isActive
+    ? `<span title="${formatAbsolute(session.startedAt)}">Started ${formatRelative(session.startedAt)}</span>`
+    : `<span title="${formatAbsolute(session.stoppedAt)}">Stopped ${formatRelative(session.stoppedAt)}</span>`;
+
+  const energyCell =
+    session.energyKWh && session.energyKWh > 0
+      ? `<span class="energy-cell">⚡ ${session.energyKWh.toFixed(3)} kWh</span>`
+      : `<span class="muted-cell">—</span>`;
+
+  return `
+    <tr class="${rowClass}">
+      <td>${statusBadge}</td>
+      <td><span class="cp-id-cell">${escapeHtml(session.cpId)}</span></td>
+      <td><span class="driver-cell">${session.idTag ? escapeHtml(session.idTag) : "—"}</span></td>
+      <td>#${escapeHtml(session.connectorId ?? "?")}</td>
+      <td>${escapeHtml(session.transactionId)}</td>
+      <td>${timeCell}</td>
+      <td>${energyCell}</td>
+    </tr>
+  `;
+}
+
+// ===== Heartbeat status helper =====
+
+function getHeartbeatStatus(lastHeartbeat, isConnected) {
+  if (!isConnected) {
+    return { dotClass: "dead", label: "Offline", title: "Charge point disconnected" };
+  }
+  if (!lastHeartbeat) {
+    return { dotClass: "dead", label: "No heartbeat yet", title: "No heartbeat received" };
+  }
+  const date = new Date(lastHeartbeat);
+  if (isNaN(date.getTime())) {
+    return { dotClass: "dead", label: "No heartbeat", title: "" };
+  }
+  const ageSec = (Date.now() - date.getTime()) / 1000;
+  if (ageSec < 20) {
+    return {
+      dotClass: "alive",
+      label: `<strong>${Math.round(ageSec)}s ago</strong>`,
+      title: `Last heartbeat: ${date.toLocaleString()}`,
+    };
+  }
+  if (ageSec < 90) {
+    return {
+      dotClass: "stale",
+      label: `<strong>${formatRelative(lastHeartbeat)}</strong>`,
+      title: `Last heartbeat: ${date.toLocaleString()} — slightly stale`,
+    };
+  }
+  return {
+    dotClass: "dead",
+    label: `<strong>${formatRelative(lastHeartbeat)}</strong> — missed`,
+    title: `Last heartbeat: ${date.toLocaleString()} — likely lost`,
+  };
+}
+
+// ===== Connector status classifier =====
+
+function classifyConnectorPillStatus(status) {
+  const n = (status || "").toLowerCase();
+  if (n === "charging") return "charging";
+  if (n === "available" || n === "preparing") return "available";
+  if (n === "finishing" || n === "suspendedev" || n === "suspendedevse" || n === "reserved")
+    return "warn";
+  if (n === "faulted" || n === "unavailable" || n === "blocked") return "error";
+  return "muted";
+}
+
+// ===== Select / Transaction helpers =====
 
 function updateChargePointSelects(chargePoints) {
   const ids = chargePoints.map((cp) => cp.id).sort();
@@ -399,8 +488,7 @@ function updateChargePointSelects(chargePoints) {
     select.innerHTML = "";
 
     if (!ids.length) {
-      const option = new Option("No charge points", "", true, true);
-      select.add(option);
+      select.add(new Option("No charge points", "", true, true));
       select.disabled = true;
       return;
     }
@@ -408,12 +496,8 @@ function updateChargePointSelects(chargePoints) {
     select.disabled = false;
     const placeholder = new Option("Select…", "", true, !previous);
     select.add(placeholder);
-    ids.forEach((id) => {
-      select.add(new Option(id, id, false, id === previous));
-    });
-    if (previous) {
-      select.value = previous;
-    }
+    ids.forEach((id) => select.add(new Option(id, id, false, id === previous)));
+    if (previous) select.value = previous;
   });
 }
 
@@ -466,6 +550,7 @@ function updateTransactionOptions(chargePoints) {
       previousTx !== "";
     select.add(option);
   });
+
   if (previousCP && previousTx) {
     const match = [...select.options].find(
       (opt) =>
@@ -482,13 +567,12 @@ function updateTransactionOptions(chargePoints) {
 
 function handleTransactionSelect() {
   const option = elements.remoteStopTransaction.selectedOptions[0];
-  if (!option || !option.dataset.cp) {
-    return;
-  }
-
+  if (!option || !option.dataset.cp) return;
   elements.remoteStopCP.value = option.dataset.cp;
   elements.remoteStopId.value = option.dataset.transaction;
 }
+
+// ===== Form handlers =====
 
 async function handleRemoteStart(event) {
   event.preventDefault();
@@ -498,14 +582,11 @@ async function handleRemoteStart(event) {
   const connectorValue = elements.remoteStartConnector.value.trim();
 
   if (!chargePointId || !idTag) {
-    displayMessage("error", "Charge point and id tag are required.");
+    displayMessage("error", "Charge point and ID tag are required.");
     return;
   }
 
-  const payload = {
-    chargePointId,
-    idTag,
-  };
+  const payload = { chargePointId, idTag };
 
   if (connectorValue) {
     const parsed = Number.parseInt(connectorValue, 10);
@@ -516,9 +597,8 @@ async function handleRemoteStart(event) {
     payload.connectorId = parsed;
   }
 
-  const submitButton =
-    elements.remoteStartForm.querySelector('button[type="submit"]');
-  setButtonLoading(submitButton, true);
+  const btn = elements.remoteStartForm.querySelector('button[type="submit"]');
+  setButtonLoading(btn, true);
 
   try {
     const response = await postJSON("/api/remote-start", payload);
@@ -532,7 +612,7 @@ async function handleRemoteStart(event) {
   } catch (error) {
     displayMessage("error", error.message);
   } finally {
-    setButtonLoading(submitButton, false);
+    setButtonLoading(btn, false);
   }
 }
 
@@ -540,49 +620,42 @@ async function handleRemoteStop(event) {
   event.preventDefault();
 
   const selectedOption = elements.remoteStopTransaction.selectedOptions[0];
-  const selectedChargePoint =
+  const selectedCP =
     selectedOption && selectedOption.dataset.cp
       ? selectedOption.dataset.cp
       : elements.remoteStopCP.value.trim();
-  const transactionIdValue =
+  const txValue =
     selectedOption && selectedOption.dataset.transaction
       ? selectedOption.dataset.transaction
       : elements.remoteStopId.value.trim();
 
-  if (!selectedChargePoint || !transactionIdValue) {
-    displayMessage(
-      "error",
-      "Select a charge point and provide a transaction id.",
-    );
+  if (!selectedCP || !txValue) {
+    displayMessage("error", "Select a charge point and provide a transaction id.");
     return;
   }
 
-  const transactionId = Number.parseInt(transactionIdValue, 10);
+  const transactionId = Number.parseInt(txValue, 10);
   if (Number.isNaN(transactionId) || transactionId <= 0) {
     displayMessage("error", "Transaction id must be a positive number.");
     return;
   }
 
-  const submitButton =
-    elements.remoteStopForm.querySelector('button[type="submit"]');
-  setButtonLoading(submitButton, true);
+  const btn = elements.remoteStopForm.querySelector('button[type="submit"]');
+  setButtonLoading(btn, true);
 
   try {
     const response = await postJSON("/api/remote-stop", {
-      chargePointId: selectedChargePoint,
+      chargePointId: selectedCP,
       transactionId,
     });
-    displayMessage(
-      "success",
-      `Remote stop sent to ${selectedChargePoint} (status: ${response.status}).`,
-    );
+    displayMessage("success", `Remote stop sent to ${selectedCP} (status: ${response.status}).`);
     elements.remoteStopForm.reset();
     updateTransactionOptions(state.chargePoints);
     refreshData();
   } catch (error) {
     displayMessage("error", error.message);
   } finally {
-    setButtonLoading(submitButton, false);
+    setButtonLoading(btn, false);
   }
 }
 
@@ -597,15 +670,11 @@ async function handleReset(event) {
     return;
   }
 
-  const submitButton =
-    elements.resetForm.querySelector('button[type="submit"]');
-  setButtonLoading(submitButton, true);
+  const btn = elements.resetForm.querySelector('button[type="submit"]');
+  setButtonLoading(btn, true);
 
   try {
-    const response = await postJSON("/api/reset", {
-      chargePointId,
-      type,
-    });
+    const response = await postJSON("/api/reset", { chargePointId, type });
     displayMessage(
       "success",
       `Reset (${type}) sent to ${chargePointId} (status: ${response.status}).`,
@@ -614,7 +683,7 @@ async function handleReset(event) {
   } catch (error) {
     displayMessage("error", error.message);
   } finally {
-    setButtonLoading(submitButton, false);
+    setButtonLoading(btn, false);
   }
 }
 
@@ -625,10 +694,7 @@ async function handleUnlock(event) {
   const connectorValue = elements.unlockConnector.value.trim();
 
   if (!chargePointId || !connectorValue) {
-    displayMessage(
-      "error",
-      "Select a charge point and provide a connector id.",
-    );
+    displayMessage("error", "Select a charge point and provide a connector id.");
     return;
   }
 
@@ -638,15 +704,11 @@ async function handleUnlock(event) {
     return;
   }
 
-  const submitButton =
-    elements.unlockForm.querySelector('button[type="submit"]');
-  setButtonLoading(submitButton, true);
+  const btn = elements.unlockForm.querySelector('button[type="submit"]');
+  setButtonLoading(btn, true);
 
   try {
-    const response = await postJSON("/api/unlock", {
-      chargePointId,
-      connectorId,
-    });
+    const response = await postJSON("/api/unlock", { chargePointId, connectorId });
     displayMessage(
       "success",
       `Unlock request sent to ${chargePointId} (status: ${response.status}).`,
@@ -657,46 +719,37 @@ async function handleUnlock(event) {
   } catch (error) {
     displayMessage("error", error.message);
   } finally {
-    setButtonLoading(submitButton, false);
+    setButtonLoading(btn, false);
   }
 }
+
+// ===== Summary & refresh label =====
 
 function updateSummary(chargePoints) {
   const total = chargePoints.length;
   const connected = chargePoints.filter((cp) => cp.connected).length;
-  const summaryEl = elements.summary;
+  const el = elements.summary;
 
   if (total === 0) {
-    summaryEl.textContent = "No charge points connected";
-    summaryEl.className = "chip chip--muted";
-    summaryEl.title = "";
+    el.textContent = "No charge points";
+    el.style.color = "";
     return;
   }
 
-  summaryEl.textContent = `${connected} of ${total} charge point${
-    total === 1 ? "" : "s"
-  } connected`;
-  summaryEl.title = "";
-
-  if (connected === 0) {
-    summaryEl.className = "chip chip--alert";
-  } else if (connected === total) {
-    summaryEl.className = "chip chip--positive";
-  } else {
-    summaryEl.className = "chip chip--muted";
-  }
+  el.textContent = `${connected} / ${total} online`;
 }
 
 function updateLastRefresh() {
   if (!state.lastRefresh) {
-    elements.lastRefresh.textContent = "Waiting for data";
-    elements.lastRefresh.title = "";
+    elements.lastRefresh.textContent = "Waiting for data…";
     return;
   }
   const date = new Date(state.lastRefresh);
   elements.lastRefresh.textContent = `Updated ${formatRelative(date)}`;
   elements.lastRefresh.title = date.toLocaleString();
 }
+
+// ===== UI helpers =====
 
 function setButtonLoading(button, isLoading) {
   if (!button) return;
@@ -725,8 +778,7 @@ async function postJSON(url, payload) {
   }
 
   if (!response.ok) {
-    const message =
-      (data && data.error) || response.statusText || "Request failed";
+    const message = (data && data.error) || response.statusText || "Request failed";
     throw new Error(message);
   }
 
@@ -734,7 +786,8 @@ async function postJSON(url, payload) {
 }
 
 function displayMessage(type, text) {
-  const container = elements.notifications;
+  const container = elements.notifications || document.getElementById("notifications");
+  if (!container) return;
   container.innerHTML = "";
   if (!text) return;
 
@@ -747,39 +800,12 @@ function displayMessage(type, text) {
   messageTimer = setTimeout(() => {
     message.classList.add("is-hidden");
     setTimeout(() => {
-      if (container.contains(message)) {
-        container.removeChild(message);
-      }
-    }, 250);
+      if (container.contains(message)) container.removeChild(message);
+    }, 270);
   }, type === "error" ? 7000 : 4000);
 }
 
-function classifyConnectorStatus(status) {
-  const normalized = (status || "").toLowerCase();
-  if (
-    normalized === "available" ||
-    normalized === "preparing" ||
-    normalized === "charging"
-  ) {
-    return "tag--ok";
-  }
-  if (
-    normalized === "finishing" ||
-    normalized === "suspendedev" ||
-    normalized === "suspendedevse" ||
-    normalized === "reserved"
-  ) {
-    return "tag--warn";
-  }
-  if (
-    normalized === "faulted" ||
-    normalized === "unavailable" ||
-    normalized === "blocked"
-  ) {
-    return "tag--error";
-  }
-  return "tag--muted";
-}
+// ===== Formatters =====
 
 function escapeHtml(value) {
   if (value === null || value === undefined) return "";
@@ -813,8 +839,7 @@ function formatRelative(value) {
   if (days < 30) return `${days} days ${tense}`;
   const months = Math.round(days / 30);
   if (months < 18) return `${months} months ${tense}`;
-  const years = Math.round(days / 365);
-  return `${years} years ${tense}`;
+  return `${Math.round(days / 365)} years ${tense}`;
 }
 
 function formatAbsolute(value) {
